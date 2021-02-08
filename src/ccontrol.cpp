@@ -26,6 +26,7 @@
  */
 
 #include "platform.h"
+#include "CameraControlProtocol.h"
 
 // Video mode parameters
 const BMDDisplayMode kDisplayMode = bmdModeHD1080i50;
@@ -45,7 +46,9 @@ const INT32_UNSIGNED kBlueData[4] = {0x40aa298, 0x2a8a62a8, 0x298aa040, 0x2a8102
 // Studio Camera control packet:
 // Set dynamic range to film.
 // See Studio Camera manual for more information on protocol.
-const INT8_UNSIGNED kSDIRemoteControlData[9] = {0x00, 0x07, 0x00, 0x00, 0x01, 0x07, 0x01, 0x00, 0x00};
+//                                                dest  leng  comm  rsvp  cate  para  type  oper  data
+const INT8_UNSIGNED kSDIRemoteControlData[12] = { 0xFF, 0x06, 0x00, 0x00, 0x00, 0x04, 0x02, 0x00, 0x05, 0x00, 0x00, 0x00 };
+// const INT8_UNSIGNED kSDIRemoteControlData[9] = { 0x00, 0x07, 0x00, 0x00, 0x01, 0x07, 0x01, 0x00, 0x00 };
 
 // Data Identifier
 const INT8_UNSIGNED kSDIRemoteControlDID = 0x51;
@@ -62,45 +65,45 @@ INT32_UNSIGNED gTotalFramesScheduled = 0;
 class OutputCallback : public IDeckLinkVideoOutputCallback
 {
 public:
-    OutputCallback(IDeckLinkOutput *deckLinkOutput)
-    {
-        m_deckLinkOutput = deckLinkOutput;
-        m_deckLinkOutput->AddRef();
-    }
-    virtual ~OutputCallback(void)
-    {
-        m_deckLinkOutput->Release();
-    }
-    HRESULT STDMETHODCALLTYPE ScheduledFrameCompleted(IDeckLinkVideoFrame *completedFrame, BMDOutputFrameCompletionResult result)
-    {
-        // When a video frame completes,reschedule another frame
-        m_deckLinkOutput->ScheduleVideoFrame(completedFrame, gTotalFramesScheduled * kFrameDuration, kFrameDuration, kTimeScale);
-        gTotalFramesScheduled++;
-        return S_OK;
-    }
+	OutputCallback(IDeckLinkOutput *deckLinkOutput)
+	{
+		m_deckLinkOutput = deckLinkOutput;
+		m_deckLinkOutput->AddRef();
+	}
+	virtual ~OutputCallback(void)
+	{
+		m_deckLinkOutput->Release();
+	}
+	HRESULT STDMETHODCALLTYPE ScheduledFrameCompleted(IDeckLinkVideoFrame *completedFrame, BMDOutputFrameCompletionResult result)
+	{
+		// When a video frame completes,reschedule another frame
+		m_deckLinkOutput->ScheduleVideoFrame(completedFrame, gTotalFramesScheduled * kFrameDuration, kFrameDuration, kTimeScale);
+		gTotalFramesScheduled++;
+		return S_OK;
+	}
 
-    HRESULT STDMETHODCALLTYPE ScheduledPlaybackHasStopped(void)
-    {
-        return S_OK;
-    }
-    // IUnknown needs only a dummy implementation
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, LPVOID *ppv)
-    {
-        return E_NOINTERFACE;
-    }
+	HRESULT STDMETHODCALLTYPE ScheduledPlaybackHasStopped(void)
+	{
+		return S_OK;
+	}
+	// IUnknown needs only a dummy implementation
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, LPVOID *ppv)
+	{
+		return E_NOINTERFACE;
+	}
 
-    ULONG STDMETHODCALLTYPE AddRef()
-    {
-        return 1;
-    }
+	ULONG STDMETHODCALLTYPE AddRef()
+	{
+		return 1;
+	}
 
-    ULONG STDMETHODCALLTYPE Release()
-    {
-        return 1;
-    }
+	ULONG STDMETHODCALLTYPE Release()
+	{
+		return 1;
+	}
 
 private:
-    IDeckLinkOutput *m_deckLinkOutput;
+	IDeckLinkOutput *m_deckLinkOutput;
 };
 
 //  This function translates a byte into a 10-bit sample
@@ -112,258 +115,299 @@ private:
 //   inverse of bit 8
 static inline INT32_UNSIGNED EncodeByte(INT32_UNSIGNED byte)
 {
-    INT32_UNSIGNED temp = byte;
-    // Calculate the even parity bit of bits 0-7 by XOR every individual bits
-    temp ^= temp >> 4;
-    temp ^= temp >> 2;
-    temp ^= temp >> 1;
-    // Use lsb as parity bit
-    temp &= 1;
-    // Put even parity bit on bit 8
-    byte |= temp << 8;
-    // Bit 9 is inverse of bit 8
-    byte |= ((~temp) & 1) << 9;
-    return byte;
+	INT32_UNSIGNED temp = byte;
+	// Calculate the even parity bit of bits 0-7 by XOR every individual bits
+	temp ^= temp >> 4;
+	temp ^= temp >> 2;
+	temp ^= temp >> 1;
+	// Use lsb as parity bit
+	temp &= 1;
+	// Put even parity bit on bit 8
+	byte |= temp << 8;
+	// Bit 9 is inverse of bit 8
+	byte |= ((~temp) & 1) << 9;
+	return byte;
 }
 // This function writes 10bit ancillary data to 10bit luma value in YUV 10bit structure
 static void WriteAncDataToLuma(INT32_UNSIGNED *&sdiStreamPosition, INT32_UNSIGNED value, INT32_UNSIGNED dataPosition)
 {
-    switch (dataPosition % 3)
-    {
-    case 0:
-        *sdiStreamPosition++ = (value) << 10;
-        break;
-    case 1:
-        *sdiStreamPosition = (value);
-        break;
-    case 2:
-        *sdiStreamPosition++ |= (value) << 20;
-        break;
-    default:
-        break;
-    }
+	switch (dataPosition % 3)
+	{
+	case 0:
+		*sdiStreamPosition++ = (value) << 10;
+		break;
+	case 1:
+		*sdiStreamPosition = (value);
+		break;
+	case 2:
+		*sdiStreamPosition++ |= (value) << 20;
+		break;
+	default:
+		break;
+	}
 }
 
 static void WriteAncillaryDataPacket(INT32_UNSIGNED *line, const INT8_UNSIGNED did, const INT8_UNSIGNED sdid, const INT8_UNSIGNED *data, INT32_UNSIGNED length)
 {
-    // Sanity check
-    if (length == 0 || length > 255)
-        return;
+	// Sanity check
+	if (length == 0 || length > 255)
+		return;
 
-    const INT32_UNSIGNED encodedDID = EncodeByte(did);
-    const INT32_UNSIGNED encodedSDID = EncodeByte(sdid);
-    const INT32_UNSIGNED encodedDC = EncodeByte(length);
+	const INT32_UNSIGNED encodedDID = EncodeByte(did);
+	const INT32_UNSIGNED encodedSDID = EncodeByte(sdid);
+	const INT32_UNSIGNED encodedDC = EncodeByte(length);
 
-    // Start sequence
-    *line++ = 0;
-    *line++ = 0x3ff003ff;
+	// Start sequence
+	*line++ = 0;
+	*line++ = 0x3ff003ff;
 
-    // DID
-    *line++ = encodedDID << 10;
+	// DID
+	*line++ = encodedDID << 10;
 
-    // SDID and DC
-    *line++ = encodedSDID | (encodedDC << 20);
+	// SDID and DC
+	*line++ = encodedSDID | (encodedDC << 20);
 
-    // Checksum does not include the start sequence
-    INT32_UNSIGNED sum = encodedDID + encodedSDID + encodedDC;
-    // Write the payload
-    for (INT32_UNSIGNED i = 0; i < length; ++i)
-    {
-        const INT32_UNSIGNED encoded = EncodeByte(data[i]);
-        WriteAncDataToLuma(line, encoded, i);
-        sum += encoded & 0x1ff;
-    }
+	// Checksum does not include the start sequence
+	INT32_UNSIGNED sum = encodedDID + encodedSDID + encodedDC;
+	// Write the payload
+	for (INT32_UNSIGNED i = 0; i < length; ++i)
+	{
+		const INT32_UNSIGNED encoded = EncodeByte(data[i]);
+		WriteAncDataToLuma(line, encoded, i);
+		sum += encoded & 0x1ff;
+	}
 
-    // Checksum % 512 then copy inverse of bit 8 to bit 9
-    sum &= 0x1ff;
-    sum |= ((~(sum << 1)) & 0x200);
-    WriteAncDataToLuma(line, sum, length);
+	// Checksum % 512 then copy inverse of bit 8 to bit 9
+	sum &= 0x1ff;
+	sum |= ((~(sum << 1)) & 0x200);
+	WriteAncDataToLuma(line, sum, length);
 }
 
 static void SetVancData(IDeckLinkVideoFrameAncillary *ancillary)
 {
-    HRESULT result;
-    INT32_UNSIGNED *buffer;
+	HRESULT result;
+	INT32_UNSIGNED *buffer;
 
-    result = ancillary->GetBufferForVerticalBlankingLine(kSDIRemoteControlLine, (void **)&buffer);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Could not get buffer for Vertical blanking line - result = %08x\n", result);
-        return;
-    }
-    // Write camera control data to buffer
-    WriteAncillaryDataPacket(buffer, kSDIRemoteControlDID, kSDIRemoteControlSDID, kSDIRemoteControlData, sizeof(kSDIRemoteControlData) / sizeof(kSDIRemoteControlData[0]));
+	result = ancillary->GetBufferForVerticalBlankingLine(kSDIRemoteControlLine, (void **)&buffer);
+	if (result != S_OK)
+	{
+		fprintf(stderr, "Could not get buffer for Vertical blanking line - result = %08x\n", result);
+		return;
+	}
+	// Write camera control data to buffer
+	WriteAncillaryDataPacket(
+		buffer,
+		kSDIRemoteControlDID,
+		kSDIRemoteControlSDID,
+		kSDIRemoteControlData,
+		sizeof(kSDIRemoteControlData) / sizeof(kSDIRemoteControlData[0]));
 }
 
 static void FillBlue(IDeckLinkMutableVideoFrame *theFrame)
 {
-    INT32_UNSIGNED *nextWord;
-    INT32_UNSIGNED wordsRemaining;
+	INT32_UNSIGNED *nextWord;
+	INT32_UNSIGNED wordsRemaining;
 
-    theFrame->GetBytes((void **)&nextWord);
-    wordsRemaining = (kRowBytes * kFrameHeight) / 4;
+	theFrame->GetBytes((void **)&nextWord);
+	wordsRemaining = (kRowBytes * kFrameHeight) / 4;
 
-    while (wordsRemaining > 0)
-    {
-        *(nextWord++) = kBlueData[0];
-        *(nextWord++) = kBlueData[1];
-        *(nextWord++) = kBlueData[2];
-        *(nextWord++) = kBlueData[3];
-        wordsRemaining = wordsRemaining - 4;
-    }
+	while (wordsRemaining > 0)
+	{
+		*(nextWord++) = kBlueData[0];
+		*(nextWord++) = kBlueData[1];
+		*(nextWord++) = kBlueData[2];
+		*(nextWord++) = kBlueData[3];
+		wordsRemaining = wordsRemaining - 4;
+	}
 }
 
 static IDeckLinkMutableVideoFrame *CreateFrame(IDeckLinkOutput *deckLinkOutput)
 {
-    HRESULT result;
-    IDeckLinkMutableVideoFrame *frame = NULL;
-    IDeckLinkVideoFrameAncillary *ancillaryData = NULL;
+	HRESULT result;
+	IDeckLinkMutableVideoFrame *frame = NULL;
+	IDeckLinkVideoFrameAncillary *ancillaryData = NULL;
 
-    result = deckLinkOutput->CreateVideoFrame(kFrameWidth, kFrameHeight, kRowBytes, kPixelFormat, bmdFrameFlagDefault, &frame);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Could not create a video frame - result = %08x\n", result);
-        goto bail;
-    }
-    FillBlue(frame);
-    result = deckLinkOutput->CreateAncillaryData(kPixelFormat, &ancillaryData);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Could not create Ancillary data - result = %08x\n", result);
-        goto bail;
-    }
-    SetVancData(ancillaryData);
-    result = frame->SetAncillaryData(ancillaryData);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Fail to set ancillary data to the frame - result = %08x\n", result);
-        goto bail;
-    }
+	result = deckLinkOutput->CreateVideoFrame(kFrameWidth, kFrameHeight, kRowBytes, kPixelFormat, bmdFrameFlagDefault, &frame);
+	if (result != S_OK)
+	{
+		fprintf(stderr, "Could not create a video frame - result = %08x\n", result);
+		goto bail;
+	}
+	FillBlue(frame);
+	result = deckLinkOutput->CreateAncillaryData(kPixelFormat, &ancillaryData);
+	if (result != S_OK)
+	{
+		fprintf(stderr, "Could not create Ancillary data - result = %08x\n", result);
+		goto bail;
+	}
+	SetVancData(ancillaryData);
+	result = frame->SetAncillaryData(ancillaryData);
+	if (result != S_OK)
+	{
+		fprintf(stderr, "Fail to set ancillary data to the frame - result = %08x\n", result);
+		goto bail;
+	}
 bail:
-    // Release the Ancillary object
-    if (ancillaryData != NULL)
-        ancillaryData->Release();
-    return frame;
+	// Release the Ancillary object
+	if (ancillaryData != NULL)
+		ancillaryData->Release();
+	return frame;
+}
+
+int run(IDeckLink *deckLink)
+{
+	IDeckLinkOutput *deckLinkOutput = NULL;
+	OutputCallback *outputCallback = NULL;
+	IDeckLinkVideoFrame *videoFrameBlue = NULL;
+	HRESULT result;
+
+	// Obtain the output interface for the DeckLink device
+	result = deckLink->QueryInterface(IID_IDeckLinkOutput, (void **)&deckLinkOutput);
+	if (result != S_OK)
+	{
+		fprintf(stderr, "Could not obtain the IDeckLinkInput interface - result = %08x\n", result);
+		goto bail;
+	}
+
+	// Create an instance of output callback
+	outputCallback = new OutputCallback(deckLinkOutput);
+	if (outputCallback == NULL)
+	{
+		fprintf(stderr, "Could not create output callback object\n");
+		goto bail;
+	}
+
+	// Set the callback object to the DeckLink device's output interface
+	result = deckLinkOutput->SetScheduledFrameCompletionCallback(outputCallback);
+	if (result != S_OK)
+	{
+		fprintf(stderr, "Could not set callback - result = %08x\n", result);
+		goto bail;
+	}
+
+	// Enable video output
+	result = deckLinkOutput->EnableVideoOutput(kDisplayMode, kOutputFlag);
+	if (result != S_OK)
+	{
+		fprintf(stderr, "Could not enable video output - result = %08x\n", result);
+		goto bail;
+	}
+
+	// for (int j = 0; j < 100; j++)
+	// {
+		// Create a frame with defined format
+		videoFrameBlue = CreateFrame(deckLinkOutput);
+
+		// Schedule a blue frame 3 times
+		for (int i = 0; i < 3; i++)
+		{
+			result = deckLinkOutput->ScheduleVideoFrame(videoFrameBlue, gTotalFramesScheduled * kFrameDuration, 1, 1); // kFrameDuration, kTimeScale);
+			if (result != S_OK)
+			{
+				fprintf(stderr, "Could not schedule video frame - result = %08x\n", result);
+				goto bail;
+			}
+			gTotalFramesScheduled++;
+		}
+
+		// Start
+		result = deckLinkOutput->StartScheduledPlayback(0, kTimeScale, 1.0);
+		if (result != S_OK)
+		{
+			fprintf(stderr, "Could not start - result = %08x\n", result);
+			goto bail;
+		}
+
+	// }
+
+	// Stop capture
+	result = deckLinkOutput->StopScheduledPlayback(0, NULL, 0);
+	// Disable the video input interface
+	result = deckLinkOutput->DisableVideoOutput();
+
+	// Release resources
+bail:
+
+	// Release the video input interface
+	if (deckLinkOutput != NULL)
+		deckLinkOutput->Release();
+
+	// Release the videoframe object
+	if (videoFrameBlue != NULL)
+		videoFrameBlue->Release();
+
+	// Release the outputCallback callback object
+	if (outputCallback)
+		delete outputCallback;
+
+	return (result == S_OK) ? 0 : 1;
 }
 
 int main(int argc, const char *argv[])
 {
+	LensGroup lensGroup;
 
-    IDeckLinkIterator *deckLinkIterator = NULL;
-    IDeckLink *deckLink = NULL;
-    IDeckLinkOutput *deckLinkOutput = NULL;
-    OutputCallback *outputCallback = NULL;
-    IDeckLinkVideoFrame *videoFrameBlue = NULL;
-    HRESULT result;
+	lensGroup.ApertureFStop = 12;
+	lensGroup.ZoomSpeed = 0.1;
 
-    Initialize();
+	// PrintLensGroup(lensGroup);
 
-    // Create an IDeckLinkIterator object to enumerate all DeckLink cards in the system
-    result = GetDeckLinkIterator(&deckLinkIterator);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "A DeckLink iterator could not be created.  The DeckLink drivers may not be installed.\n");
-        goto bail;
-    }
+	int arg_decklink_device = strtol(argv[1], nullptr, 0);
 
-    // Obtain the first DeckLink device
-    result = deckLinkIterator->Next(&deckLink);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Could not find DeckLink device - result = %08x\n", result);
-        goto bail;
-    }
+	IDeckLinkIterator *deckLinkIterator = NULL;
+	IDeckLink *deckLink = NULL;
+	HRESULT result;
 
-    // Obtain the output interface for the DeckLink device
-    result = deckLink->QueryInterface(IID_IDeckLinkOutput, (void **)&deckLinkOutput);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Could not obtain the IDeckLinkInput interface - result = %08x\n", result);
-        goto bail;
-    }
+	Initialize();
 
-    // Create an instance of output callback
-    outputCallback = new OutputCallback(deckLinkOutput);
-    if (outputCallback == NULL)
-    {
-        fprintf(stderr, "Could not create output callback object\n");
-        goto bail;
-    }
+	// Create an IDeckLinkIterator object to enumerate all DeckLink cards in the system
+	result = GetDeckLinkIterator(&deckLinkIterator);
+	if (result != S_OK)
+	{
+		fprintf(stderr, "A DeckLink iterator could not be created.  The DeckLink drivers may not be installed.\n");
+		goto bail;
+	}
 
-    // Set the callback object to the DeckLink device's output interface
-    result = deckLinkOutput->SetScheduledFrameCompletionCallback(outputCallback);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Could not set callback - result = %08x\n", result);
-        goto bail;
-    }
+	while (deckLinkIterator->Next(&deckLink) == S_OK)
+	{
+		IDeckLinkAttributes *deckLinkAttributes = NULL;
+		int64_t value;
 
-    // Enable video output
-    result = deckLinkOutput->EnableVideoOutput(kDisplayMode, kOutputFlag);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Could not enable video output - result = %08x\n", result);
-        goto bail;
-    }
+		// Query the DeckLink for its attributes interface
+		result = deckLink->QueryInterface(IID_IDeckLinkAttributes, (void **)&deckLinkAttributes);
 
-    // Create a frame with defined format
-    videoFrameBlue = CreateFrame(deckLinkOutput);
+		result = deckLinkAttributes->GetInt(BMDDeckLinkSubDeviceIndex, &value);
+		if (result == S_OK)
+		{
 
-    // Schedule a blue frame 3 times
-    for (int i = 0; i < 3; i++)
-    {
-        result = deckLinkOutput->ScheduleVideoFrame(videoFrameBlue, gTotalFramesScheduled * kFrameDuration, kFrameDuration, kTimeScale);
-        if (result != S_OK)
-        {
-            fprintf(stderr, "Could not schedule video frame - result = %08x\n", result);
-            goto bail;
-        }
-        gTotalFramesScheduled++;
-    }
+			if (value == arg_decklink_device)
+			{
+				printf(" SENDING ANC DATA TO SUBDEVICE INDEX %ld \n", value);
+				run(deckLink);
+			}
+		}
+		else
+		{
+			fprintf(stderr, "Could not query the sub-device index attribute- result = %08x\n", result);
+		}
+	}
 
-    // Start
-    result = deckLinkOutput->StartScheduledPlayback(0, kTimeScale, 1.0);
-    if (result != S_OK)
-    {
-        fprintf(stderr, "Could not start - result = %08x\n", result);
-        goto bail;
-    }
+	// Wait until user presses Enter
+	// printf("Monitoring... Press <RETURN> to exit\n");
 
-    // Wait until user presses Enter
-    printf("Monitoring... Press <RETURN> to exit\n");
+	// getchar();
 
-    getchar();
+	// printf("Exiting.\n");
 
-    printf("Exiting.\n");
-
-    // Stop capture
-    result = deckLinkOutput->StopScheduledPlayback(0, NULL, 0);
-
-    // Disable the video input interface
-    result = deckLinkOutput->DisableVideoOutput();
-
-    // Release resources
 bail:
 
-    // Release the video input interface
-    if (deckLinkOutput != NULL)
-        deckLinkOutput->Release();
+	// Release the Decklink object
+	if (deckLink != NULL)
+		deckLink->Release();
 
-    // Release the Decklink object
-    if (deckLink != NULL)
-        deckLink->Release();
+	// Release the DeckLink iterator
+	if (deckLinkIterator != NULL)
+		deckLinkIterator->Release();
 
-    // Release the DeckLink iterator
-    if (deckLinkIterator != NULL)
-        deckLinkIterator->Release();
-
-    // Release the videoframe object
-    if (videoFrameBlue != NULL)
-        videoFrameBlue->Release();
-
-    // Release the outputCallback callback object
-    if (outputCallback)
-        delete outputCallback;
-
-    return (result == S_OK) ? 0 : 1;
+	return (result == S_OK) ? 0 : 1;
 }
